@@ -1,0 +1,128 @@
+---
+- name: Playbook_main
+  hosts: all
+  become: true
+  vars:
+    nginx_container_name: nginx-container
+    nginx_image_name: nginx:latest
+    nginx_container_port: 5000
+    nginx_host_port: 80
+    nginx_server_name: nginx-container-server
+    nginx_conf_path: /etc/nginx/nginx-apache-docker/nginx.conf
+    apache_container_name: apache-container
+    apache_image_name: httpd:latest
+    apache_container_port: 80
+    apache_host_port: 5001
+    ftp_container_name: ftp_server
+    ftp_container_image: fauria/vsftpd
+    ftp_container_port: "21:21"
+    ftp_user: admin
+    ftp_directory: /var/ftp
+
+  tasks:
+  - name: Update
+    apt:
+     update_cache: yes
+     upgrade: yes
+
+  - name: Install Docker
+    apt:
+     name: docker.io
+     state: present
+
+######################################################
+
+  - name: Install Apache Docker image
+    docker_image:
+     name: "{{ apache_image_name }}"
+     source: pull
+
+  - name: Start Apache container
+    docker_container:
+      name: "{{ apache_container_name }}"
+      image: "{{ apache_image_name }}"
+      ports:
+        - "{{ apache_host_port }}:{{ apache_container_port }}"
+      restart_policy: always
+
+  - name: Verify Apache is running
+    wait_for:
+      host: localhost
+      port: "{{ apache_host_port }}"
+      delay: 5
+      timeout: 60
+      state: started
+
+  - name: Pull NGINX container
+    docker_image:
+      name: "{{ nginx_image_name }}"
+      source: pull
+
+  - name: Amend NGINX conf file
+    become: yes
+    blockinfile:
+      path: "{{ nginx_conf_path }}"
+      marker: ""
+      block: |
+         server {
+          listen 80;
+          server_name "{{ nginx_server_name }}";
+
+            location / {
+            proxy_pass http://127.0.0.1:"{{ apache_container_port }}";
+            proxy_set_header Host $host;
+            proxy_set_3header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+  - name: Start NGINX container
+    docker_container:
+     name: "{{ nginx_container_name }}"
+     image: "{{ nginx_image_name }}"
+     ports:
+     - "{{ nginx_host_port }}:{{ nginx_container_port }}"
+     volumes:
+     - "/var/run/docker.sock:/tmp/docker.sock:ro"
+     state: started
+
+  - name: Create FTP user
+    user:
+     name: "{{ ftp_user }}"
+     password: "{{ '12345678' | password_hash('md5') }}"
+     shell: /bin/bash
+
+  - name: Create FTP directory
+    file:
+     path: /var/ftp
+     state: directory
+     owner: "{{ ftp_user }}"
+     group: root
+
+  - name: Configure FTP access
+    lineinfile:
+      path: /etc/vsftpd.conf
+      line: |
+        local_enable=YES
+        write_enable=YES
+        local_umask=021
+        chroot_local_user=YES
+        allow_writeable_chroot=YES
+      state: present
+
+  - name: FTP server docker container
+    docker_container:
+      name: "{{ ftp_container_name }}"
+      image: "{{ ftp_container_image }}"
+      state: started
+      published_ports: "{{ ftp_container_port }}"
+      restart_policy: always
+      env:
+        FTP_user: "{{ ftp_user }}"
+        FTP_password: "{{ '12345678' | password_hash('md5') }}"
+
+  - name: Restart all containers
+    docker_container:
+      name: "{{ nginx_container_name }}"
+      name: "{{ apache-container }}"
+      name: "{{ ftp_container_name }}"
+      state: started
+...
